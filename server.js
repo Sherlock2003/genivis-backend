@@ -8,8 +8,16 @@ const PORT = process.env.PORT || 3001;
 const DATA_FILE = path.join(__dirname, 'visitors.json');
 const LOG_FILE = path.join(__dirname, 'visit_logs.json');
 
-app.use(cors());
+// ── CORS — allow all origins ──────────────────────────────
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+app.options('*', cors()); // handle preflight for ALL routes
+
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // ── Helpers ──────────────────────────────────────────────
 function getTodayStr() {
@@ -161,19 +169,29 @@ app.get('/api/reports', (req, res) => {
 });
 
 // ── RESET ROUTE ───────────────────────────────────────────
+// Accepts: POST /api/reset
+// Body: { password, resetType }  OR query: ?password=xxx&resetType=yyy
 app.post('/api/reset', (req, res) => {
-  const { password, resetType } = req.body;
-  if (password !== (process.env.ADMIN_PASSWORD || 'genivis@admin123')) {
+  // Accept from body OR query string (fallback)
+  const password   = req.body?.password   || req.query?.password;
+  const resetType  = req.body?.resetType  || req.query?.resetType;
+
+  console.log('RESET REQUEST — body:', req.body, '| query:', req.query);
+  console.log('Resolved — password:', password ? '***' : 'MISSING', '| resetType:', resetType);
+
+  const ADMIN_PW = process.env.ADMIN_PASSWORD || 'genivis@admin123';
+
+  if (!password || password !== ADMIN_PW) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
   const today = getTodayStr();
 
   if (resetType === 'all') {
-    // Reset everything
     saveData({ total: 0, today: 0, date: today });
     saveLogs({ daily: {}, hourly: {}, visits: [] });
     onlineSessions.clear();
+    console.log('RESET ALL done');
     return res.json({ success: true, message: 'All counters and logs reset to zero.' });
   }
 
@@ -182,12 +200,12 @@ app.post('/api/reset', (req, res) => {
     data.today = 0;
     data.date = today;
     saveData(data);
-    // Also clear today's logs
     const logs = loadLogs();
     delete logs.daily[today];
     Object.keys(logs.hourly).forEach(h => { if (h.startsWith(today)) delete logs.hourly[h]; });
     logs.visits = logs.visits.filter(v => v.date !== today);
     saveLogs(logs);
+    console.log('RESET TODAY done');
     return res.json({ success: true, message: "Today's count reset to zero." });
   }
 
@@ -195,10 +213,15 @@ app.post('/api/reset', (req, res) => {
     let data = loadData();
     data.total = 0;
     saveData(data);
+    console.log('RESET TOTAL done');
     return res.json({ success: true, message: 'Total visitors reset to zero.' });
   }
 
-  return res.status(400).json({ error: 'Invalid resetType. Use: all, today, total' });
+  console.log('RESET FAILED — unknown resetType:', resetType);
+  return res.status(400).json({
+    error: `Invalid resetType "${resetType}". Use: all, today, total`,
+    received: { password: password ? '***' : undefined, resetType },
+  });
 });
 
 setInterval(cleanSessions, 30 * 1000);
