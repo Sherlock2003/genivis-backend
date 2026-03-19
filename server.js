@@ -17,12 +17,12 @@ function getTodayStr() {
 }
 
 function getHourStr() {
-  return new Date().toISOString().slice(0, 13); // "2025-03-19T14"
+  return new Date().toISOString().slice(0, 13);
 }
 
 function loadData() {
   if (!fs.existsSync(DATA_FILE)) {
-    const init = { total: 1240, today: 0, date: getTodayStr() };
+    const init = { total: 0, today: 0, date: getTodayStr() };
     fs.writeFileSync(DATA_FILE, JSON.stringify(init, null, 2));
     return init;
   }
@@ -50,13 +50,9 @@ function logVisit(req) {
   const hour = getHourStr();
   const now = new Date();
 
-  // Daily count
   logs.daily[today] = (logs.daily[today] || 0) + 1;
-
-  // Hourly count
   logs.hourly[hour] = (logs.hourly[hour] || 0) + 1;
 
-  // Individual visit log (keep last 1000)
   const visit = {
     timestamp: now.toISOString(),
     date: today,
@@ -69,7 +65,6 @@ function logVisit(req) {
 
   logs.visits.unshift(visit);
   if (logs.visits.length > 1000) logs.visits = logs.visits.slice(0, 1000);
-
   saveLogs(logs);
 }
 
@@ -97,111 +92,113 @@ function getOnlineCount() {
 
 // ── Routes ───────────────────────────────────────────────
 
-// GET /api/visit?new=1&sid=SESSION_ID
 app.get('/api/visit', (req, res) => {
   let data = loadData();
   const today = getTodayStr();
-
-  if (data.date !== today) {
-    data.today = 0;
-    data.date = today;
-  }
-
+  if (data.date !== today) { data.today = 0; data.date = today; }
   const sid = req.query.sid || 'unknown';
   onlineSessions.set(sid, Date.now());
-
   if (req.query.new === '1') {
     data.total += 1;
     data.today += 1;
     saveData(data);
     logVisit(req);
   }
-
   res.json({ total: data.total, today: data.today, online: getOnlineCount() });
 });
 
-// GET /api/ping?sid=SESSION_ID
 app.get('/api/ping', (req, res) => {
   const sid = req.query.sid || 'unknown';
   onlineSessions.set(sid, Date.now());
   res.json({ online: getOnlineCount() });
 });
 
-// POST /api/leave?sid=SESSION_ID
 app.post('/api/leave', (req, res) => {
   const sid = req.query.sid || req.body?.sid || 'unknown';
   onlineSessions.delete(sid);
   res.json({ online: getOnlineCount() });
 });
 
-// GET /api/stats
 app.get('/api/stats', (req, res) => {
   let data = loadData();
   const today = getTodayStr();
-  if (data.date !== today) {
-    data.today = 0;
-    data.date = today;
-    saveData(data);
-  }
+  if (data.date !== today) { data.today = 0; data.date = today; saveData(data); }
   res.json({ total: data.total, today: data.today, online: getOnlineCount() });
 });
 
-// GET /api/reports?from=2025-01-01&to=2025-03-19&password=admin123
 app.get('/api/reports', (req, res) => {
   const { from, to, password } = req.query;
   if (password !== (process.env.ADMIN_PASSWORD || 'genivis@admin123')) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
-
   const logs = loadLogs();
   const data = loadData();
 
-  // Filter daily stats by date range
   let daily = {};
   Object.entries(logs.daily).forEach(([date, count]) => {
-    if ((!from || date >= from) && (!to || date <= to)) {
-      daily[date] = count;
-    }
+    if ((!from || date >= from) && (!to || date <= to)) daily[date] = count;
   });
 
-  // Filter hourly stats
   let hourly = {};
   Object.entries(logs.hourly).forEach(([hour, count]) => {
     const date = hour.slice(0, 10);
-    if ((!from || date >= from) && (!to || date <= to)) {
-      hourly[hour] = count;
-    }
+    if ((!from || date >= from) && (!to || date <= to)) hourly[hour] = count;
   });
 
-  // Filter visit logs
-  let visits = logs.visits.filter(v => {
-    return (!from || v.date >= from) && (!to || v.date <= to);
-  });
+  let visits = logs.visits.filter(v => (!from || v.date >= from) && (!to || v.date <= to));
 
-  // Device breakdown
   const devices = { Desktop: 0, Mobile: 0, Tablet: 0 };
   visits.forEach(v => { if (devices[v.device] !== undefined) devices[v.device]++; });
 
-  // Peak hour analysis
   const hourCounts = {};
-  visits.forEach(v => {
-    const h = v.hour;
-    hourCounts[h] = (hourCounts[h] || 0) + 1;
-  });
+  visits.forEach(v => { hourCounts[v.hour] = (hourCounts[v.hour] || 0) + 1; });
 
   res.json({
-    summary: {
-      total: data.total,
-      today: data.today,
-      online: getOnlineCount(),
-      periodTotal: visits.length,
-    },
-    daily,
-    hourly,
-    hourCounts,
-    devices,
+    summary: { total: data.total, today: data.today, online: getOnlineCount(), periodTotal: visits.length },
+    daily, hourly, hourCounts, devices,
     recentVisits: visits.slice(0, 50),
   });
+});
+
+// ── RESET ROUTE ───────────────────────────────────────────
+app.post('/api/reset', (req, res) => {
+  const { password, resetType } = req.body;
+  if (password !== (process.env.ADMIN_PASSWORD || 'genivis@admin123')) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const today = getTodayStr();
+
+  if (resetType === 'all') {
+    // Reset everything
+    saveData({ total: 0, today: 0, date: today });
+    saveLogs({ daily: {}, hourly: {}, visits: [] });
+    onlineSessions.clear();
+    return res.json({ success: true, message: 'All counters and logs reset to zero.' });
+  }
+
+  if (resetType === 'today') {
+    let data = loadData();
+    data.today = 0;
+    data.date = today;
+    saveData(data);
+    // Also clear today's logs
+    const logs = loadLogs();
+    delete logs.daily[today];
+    Object.keys(logs.hourly).forEach(h => { if (h.startsWith(today)) delete logs.hourly[h]; });
+    logs.visits = logs.visits.filter(v => v.date !== today);
+    saveLogs(logs);
+    return res.json({ success: true, message: "Today's count reset to zero." });
+  }
+
+  if (resetType === 'total') {
+    let data = loadData();
+    data.total = 0;
+    saveData(data);
+    return res.json({ success: true, message: 'Total visitors reset to zero.' });
+  }
+
+  return res.status(400).json({ error: 'Invalid resetType. Use: all, today, total' });
 });
 
 setInterval(cleanSessions, 30 * 1000);
