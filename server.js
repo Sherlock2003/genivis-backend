@@ -42,10 +42,33 @@ async function connectDB() {
 }
 
 // ── Helpers ──────────────────────────────────────────────
-function getTodayStr() {
-  return new Date().toISOString().slice(0, 10);
+
+// IST = UTC + 5:30
+function getISTDate() {
+  const now = new Date();
+  const istOffset = 5.5 * 60 * 60 * 1000; // 5h 30min in ms
+  return new Date(now.getTime() + istOffset);
 }
 
+function getTodayStr() {
+  return getISTDate().toISOString().slice(0, 10);
+}
+
+function getISTTimeStr() {
+  const ist = getISTDate();
+  const hh = String(ist.getUTCHours()).padStart(2, '0');
+  const mm = String(ist.getUTCMinutes()).padStart(2, '0');
+  const ss = String(ist.getUTCSeconds()).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+}
+
+function getISTHour() {
+  return getISTDate().getUTCHours();
+}
+
+function getISTHourKey() {
+  return getISTDate().toISOString().slice(0, 13); // "2025-03-19T14"
+}
 function getDevice(ua) {
   if (/mobile/i.test(ua)) return 'Mobile';
   if (/tablet|ipad/i.test(ua)) return 'Tablet';
@@ -89,28 +112,30 @@ async function loadCounters() {
 async function logVisit(req) {
   const today = getTodayStr();
   const now = new Date();
-  const hour = now.getHours();
+  const hour = getISTHour();
+  const timeStr = getISTTimeStr();
+  const hourKey = getISTHourKey();
 
   // Log individual visit
   await db.collection('visits').insertOne({
     timestamp: now,
     date: today,
-    time: now.toTimeString().slice(0, 8),
-    hour,
+    time: timeStr,         // IST time e.g. "11:35:22"
+    hour,                  // IST hour e.g. 11
+    timezone: 'IST',
     ip: req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown',
     userAgent: req.headers['user-agent'] || 'unknown',
     device: getDevice(req.headers['user-agent'] || ''),
   });
 
-  // Update daily stats
+  // Update daily stats (IST date)
   await db.collection('daily').updateOne(
     { date: today },
     { $inc: { count: 1 } },
     { upsert: true }
   );
 
-  // Update hourly stats
-  const hourKey = now.toISOString().slice(0, 13);
+  // Update hourly stats (IST hour key)
   await db.collection('hourly').updateOne(
     { hour: hourKey },
     { $inc: { count: 1 }, $set: { date: today, hourNum: hour } },
